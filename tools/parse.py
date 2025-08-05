@@ -166,52 +166,111 @@ class MineruTool(Tool):
 
         headers = self._get_headers(credentials)
 
+        # 构建文件列表，支持通过URL上传
+        files_data = []
         for file in file_list:
-            if not isinstance(file, File):
+            if hasattr(file, 'url') and file.url:
+                # 如果文件有URL属性，使用URL上传
+                files_data.append({
+                    "url": file.url,
+                    "is_ocr": tool_parameters.get("enable_ocr", False),
+                    "data_id": file.related_id if hasattr(file, 'related_id') else str(time.time())
+                })
+            elif isinstance(file, File):
+                # 兼容原有的File对象上传方式
+                self._validate_file_type(file.filename)
+                files_data.append({
+                    "url": None,
+                    "name": file.filename,
+                    "is_ocr": tool_parameters.get("enable_ocr", False),
+                    "data_id": str(time.time())
+                })
+            else:
                 logger.error("Invalid file object in file_list")
                 raise ValueError("File is required")
-            self._validate_file_type(file.filename)
 
-            # 1. 申请上传地址
+        # 检查是否所有文件都使用URL上传
+        all_url_upload = all(f.get("url") is not None for f in files_data)
+
+        if all_url_upload:
+            # 所有文件都使用URL上传，直接提交任务
             data = {
                 "enable_formula": tool_parameters.get("enable_formula", True),
                 "enable_table": tool_parameters.get("enable_table", True),
                 "language": tool_parameters.get("language", "auto"),
                 "layout_model": tool_parameters.get("layout_model", "doclayout_yolo"),
                 "extra_formats": json.loads(tool_parameters.get("extra_formats", "[]")),
-                "files": [
-                    {"name": file.filename,
-                    "is_ocr": tool_parameters.get("enable_ocr", False)}
-                ]
+                "files": files_data
             }
-            task_url = self._build_api_url(credentials.base_url, "api/v4/file-urls/batch")
+            task_url = self._build_api_url(credentials.base_url, "api/v4/extract/task/batch")
             response = post(task_url, headers=headers, json=data)
             if response.status_code != 200:
-                logger.error('apply upload url failed. status:{} ,result:{}'.format(
+                logger.error('submit task failed. status:{} ,result:{}'.format(
                     response.status_code, response.text))
-                raise Exception('apply upload url failed. status:{} ,result:{}'.format(
+                raise Exception('submit task failed. status:{} ,result:{}'.format(
                     response.status_code, response.text))
 
             result = response.json()
             if result["code"] != 0:
-                logger.error('apply upload url failed,reason:{}'.format(result.get("msg", "unknown")))
-                raise Exception('apply upload url failed,reason:{}'.format(result.get("msg", "unknown")))
+                logger.error('submit task failed,reason:{}'.format(result.get("msg", "unknown")))
+                raise Exception('submit task failed,reason:{}'.format(result.get("msg", "unknown")))
 
             batch_id = result["data"]["batch_id"]
-            upload_url = result["data"]["file_urls"][0]
-
-            # 2. 上传文件
-            res_upload = put(upload_url, data=file.blob)
-            if res_upload.status_code != 200:
-                logger.error(f"{upload_url} upload failed")
-                raise Exception(f"{upload_url} upload failed")
-
-            # 3. 轮询解析结果
+            logger.info(f"Task submitted successfully, batch_id: {batch_id}")
+            
+            # 轮询解析结果
             extract_result = self._poll_get_parse_result(credentials, batch_id)
-
-            # 4. 下载并提取 zip
+            
+            # 下载并提取 zip
             yield from self._download_and_extract_zip(extract_result.get("full_zip_url"))
             yield self.create_variable_message("full_zip_url", extract_result.get("full_zip_url"))
+        else:
+            # 混合上传方式或纯文件上传，使用原有的申请上传地址方式
+            for file_data in files_data:
+                if file_data.get("url") is None:
+                    # 找到对应的File对象
+                    file_obj = next(f for f in file_list if isinstance(f, File) and f.filename == file_data["name"])
+                    
+                    # 1. 申请上传地址
+                    data = {
+                        "enable_formula": tool_parameters.get("enable_formula", True),
+                        "enable_table": tool_parameters.get("enable_table", True),
+                        "language": tool_parameters.get("language", "auto"),
+                        "layout_model": tool_parameters.get("layout_model", "doclayout_yolo"),
+                        "extra_formats": json.loads(tool_parameters.get("extra_formats", "[]")),
+                        "files": [
+                            {"name": file_obj.filename,
+                            "is_ocr": tool_parameters.get("enable_ocr", False)}
+                        ]
+                    }
+                    task_url = self._build_api_url(credentials.base_url, "api/v4/file-urls/batch")
+                    response = post(task_url, headers=headers, json=data)
+                    if response.status_code != 200:
+                        logger.error('apply upload url failed. status:{} ,result:{}'.format(
+                            response.status_code, response.text))
+                        raise Exception('apply upload url failed. status:{} ,result:{}'.format(
+                            response.status_code, response.text))
+
+                    result = response.json()
+                    if result["code"] != 0:
+                        logger.error('apply upload url failed,reason:{}'.format(result.get("msg", "unknown")))
+                        raise Exception('apply upload url failed,reason:{}'.format(result.get("msg", "unknown")))
+
+                    batch_id = result["data"]["batch_id"]
+                    upload_url = result["data"]["file_urls"][0]
+
+                    # 2. 上传文件
+                    res_upload = put(upload_url, data=file_obj.blob)
+                    if res_upload.status_code != 200:
+                        logger.error(f"{upload_url} upload failed")
+                        raise Exception(f"{upload_url} upload failed")
+
+                    # 3. 轮询解析结果
+                    extract_result = self._poll_get_parse_result(credentials, batch_id)
+
+                    # 4. 下载并提取 zip
+                    yield from self._download_and_extract_zip(extract_result.get("full_zip_url"))
+                    yield self.create_variable_message("full_zip_url", extract_result.get("full_zip_url"))
 
     def _poll_get_parse_result(self, credentials: Credentials, batch_id: str) -> Dict[str, Any]:
         """poll get parser result."""
