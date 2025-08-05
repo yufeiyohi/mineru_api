@@ -169,41 +169,59 @@ class MineruTool(Tool):
         # 构建文件列表，支持通过URL上传
         files_data = []
         for file in file_list:
-            if hasattr(file, 'url') and file.url:
-                # 如果文件有URL属性，使用URL上传
+            # 处理Dify文件对象格式
+            if isinstance(file, dict) and file.get('url'):
+                # 处理字典格式的文件对象
+                filename = file.get('filename', 'unknown')
+                files_data.append({
+                    "url": file['url'],
+                    "is_ocr": tool_parameters.get("enable_ocr", True),  # 图片默认启用OCR
+                    "data_id": file.get('related_id', str(time.time()))
+                })
+            elif hasattr(file, 'url') and file.url:
+                # 处理对象格式的文件对象
                 files_data.append({
                     "url": file.url,
-                    "is_ocr": tool_parameters.get("enable_ocr", False),
+                    "is_ocr": tool_parameters.get("enable_ocr", True),  # 图片默认启用OCR
                     "data_id": file.related_id if hasattr(file, 'related_id') else str(time.time())
                 })
             elif isinstance(file, File):
                 # 兼容原有的File对象上传方式
-                self._validate_file_type(file.filename)
-                files_data.append({
-                    "url": None,
-                    "name": file.filename,
-                    "is_ocr": tool_parameters.get("enable_ocr", False),
-                    "data_id": str(time.time())
-                })
+                try:
+                    self._validate_file_type(file.filename)
+                    files_data.append({
+                        "url": None,
+                        "name": file.filename,
+                        "is_ocr": tool_parameters.get("enable_ocr", False),
+                        "data_id": str(time.time())
+                    })
+                except ValueError as e:
+                    # 如果是图片文件，允许通过URL方式处理
+                    if file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        logger.warning(f"File {file.filename} type not supported for direct upload, but can be processed via URL if available")
+                    else:
+                        raise e
             else:
                 logger.error("Invalid file object in file_list")
                 raise ValueError("File is required")
 
         # 检查是否所有文件都使用URL上传
-        all_url_upload = all(f.get("url") is not None for f in files_data)
-
-        if all_url_upload:
-            # 所有文件都使用URL上传，直接提交任务
+        url_files = [f for f in files_data if f.get("url") is not None]
+        
+        if url_files:
+            # 使用URL上传方式处理所有有URL的文件
             data = {
                 "enable_formula": tool_parameters.get("enable_formula", True),
                 "enable_table": tool_parameters.get("enable_table", True),
                 "language": tool_parameters.get("language", "auto"),
                 "layout_model": tool_parameters.get("layout_model", "doclayout_yolo"),
                 "extra_formats": json.loads(tool_parameters.get("extra_formats", "[]")),
-                "files": files_data
+                "files": url_files
             }
             task_url = self._build_api_url(credentials.base_url, "api/v4/extract/task/batch")
+            logger.info(f"Submitting batch task with {len(url_files)} files via URL")
             response = post(task_url, headers=headers, json=data)
+            
             if response.status_code != 200:
                 logger.error('submit task failed. status:{} ,result:{}'.format(
                     response.status_code, response.text))
@@ -225,7 +243,7 @@ class MineruTool(Tool):
             yield from self._download_and_extract_zip(extract_result.get("full_zip_url"))
             yield self.create_variable_message("full_zip_url", extract_result.get("full_zip_url"))
         else:
-            # 混合上传方式或纯文件上传，使用原有的申请上传地址方式
+            # 没有URL的文件，使用原有的申请上传地址方式
             for file_data in files_data:
                 if file_data.get("url") is None:
                     # 找到对应的File对象
