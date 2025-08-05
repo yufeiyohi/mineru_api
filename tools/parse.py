@@ -219,29 +219,35 @@ class MineruTool(Tool):
                 "files": url_files
             }
             task_url = self._build_api_url(credentials.base_url, "api/v4/extract/task/batch")
-            logger.info(f"Submitting batch task with {len(url_files)} files via URL")
-            response = post(task_url, headers=headers, json=data)
+            logger.info(f"Submitting batch task with {len(url_files)} files via URL to {task_url}")
             
-            if response.status_code != 200:
-                logger.error('submit task failed. status:{} ,result:{}'.format(
-                    response.status_code, response.text))
-                raise Exception('submit task failed. status:{} ,result:{}'.format(
-                    response.status_code, response.text))
+            try:
+                response = post(task_url, headers=headers, json=data, timeout=30)
+                if response.status_code != 200:
+                    logger.error('submit task failed. status:{} ,result:{}'.format(
+                        response.status_code, response.text))
+                    raise Exception('submit task failed. status:{} ,result:{}'.format(
+                        response.status_code, response.text))
 
-            result = response.json()
-            if result["code"] != 0:
-                logger.error('submit task failed,reason:{}'.format(result.get("msg", "unknown")))
-                raise Exception('submit task failed,reason:{}'.format(result.get("msg", "unknown")))
+                result = response.json()
+                if result["code"] != 0:
+                    logger.error('submit task failed,reason:{}'.format(result.get("msg", "unknown")))
+                    raise Exception('submit task failed,reason:{}'.format(result.get("msg", "unknown")))
 
-            batch_id = result["data"]["batch_id"]
-            logger.info(f"Task submitted successfully, batch_id: {batch_id}")
-            
-            # 轮询解析结果
-            extract_result = self._poll_get_parse_result(credentials, batch_id)
-            
-            # 下载并提取 zip
-            yield from self._download_and_extract_zip(extract_result.get("full_zip_url"))
-            yield self.create_variable_message("full_zip_url", extract_result.get("full_zip_url"))
+                batch_id = result["data"]["batch_id"]
+                logger.info(f"Task submitted successfully, batch_id: {batch_id}")
+                
+                # 轮询解析结果
+                extract_result = self._poll_get_parse_result(credentials, batch_id)
+                
+                # 下载并提取 zip
+                yield from self._download_and_extract_zip(extract_result.get("full_zip_url"))
+                yield self.create_variable_message("full_zip_url", extract_result.get("full_zip_url"))
+                
+            except Exception as e:
+                logger.error(f"Network error when submitting task: {str(e)}")
+                yield self.create_text_message(f"网络连接错误: {str(e)}。请检查base_url配置和网络连接。")
+                return
         else:
             # 没有URL的文件，使用原有的申请上传地址方式
             for file_data in files_data:
@@ -262,33 +268,41 @@ class MineruTool(Tool):
                         ]
                     }
                     task_url = self._build_api_url(credentials.base_url, "api/v4/file-urls/batch")
-                    response = post(task_url, headers=headers, json=data)
-                    if response.status_code != 200:
-                        logger.error('apply upload url failed. status:{} ,result:{}'.format(
-                            response.status_code, response.text))
-                        raise Exception('apply upload url failed. status:{} ,result:{}'.format(
-                            response.status_code, response.text))
+                    logger.info(f"Applying upload URL for {file_obj.filename}")
+                    
+                    try:
+                        response = post(task_url, headers=headers, json=data, timeout=30)
+                        if response.status_code != 200:
+                            logger.error('apply upload url failed. status:{} ,result:{}'.format(
+                                response.status_code, response.text))
+                            raise Exception('apply upload url failed. status:{} ,result:{}'.format(
+                                response.status_code, response.text))
 
-                    result = response.json()
-                    if result["code"] != 0:
-                        logger.error('apply upload url failed,reason:{}'.format(result.get("msg", "unknown")))
-                        raise Exception('apply upload url failed,reason:{}'.format(result.get("msg", "unknown")))
+                        result = response.json()
+                        if result["code"] != 0:
+                            logger.error('apply upload url failed,reason:{}'.format(result.get("msg", "unknown")))
+                            raise Exception('apply upload url failed,reason:{}'.format(result.get("msg", "unknown")))
 
-                    batch_id = result["data"]["batch_id"]
-                    upload_url = result["data"]["file_urls"][0]
+                        batch_id = result["data"]["batch_id"]
+                        upload_url = result["data"]["file_urls"][0]
 
-                    # 2. 上传文件
-                    res_upload = put(upload_url, data=file_obj.blob)
-                    if res_upload.status_code != 200:
-                        logger.error(f"{upload_url} upload failed")
-                        raise Exception(f"{upload_url} upload failed")
+                        # 2. 上传文件
+                        res_upload = put(upload_url, data=file_obj.blob, timeout=30)
+                        if res_upload.status_code != 200:
+                            logger.error(f"{upload_url} upload failed")
+                            raise Exception(f"{upload_url} upload failed")
 
-                    # 3. 轮询解析结果
-                    extract_result = self._poll_get_parse_result(credentials, batch_id)
+                        # 3. 轮询解析结果
+                        extract_result = self._poll_get_parse_result(credentials, batch_id)
 
-                    # 4. 下载并提取 zip
-                    yield from self._download_and_extract_zip(extract_result.get("full_zip_url"))
-                    yield self.create_variable_message("full_zip_url", extract_result.get("full_zip_url"))
+                        # 4. 下载并提取 zip
+                        yield from self._download_and_extract_zip(extract_result.get("full_zip_url"))
+                        yield self.create_variable_message("full_zip_url", extract_result.get("full_zip_url"))
+                        
+                    except Exception as e:
+                        logger.error(f"Network error: {str(e)}")
+                        yield self.create_text_message(f"网络连接错误: {str(e)}。请检查base_url配置和网络连接。")
+                        return
 
     def _poll_get_parse_result(self, credentials: Credentials, batch_id: str) -> Dict[str, Any]:
         """poll get parser result."""
@@ -298,20 +312,27 @@ class MineruTool(Tool):
         retry_interval = 5
 
         for _ in range(max_retries):
-            response = get(url, headers=headers)
-            if response.status_code == 200:
-                data = response.json().get("data", {})
-                extract_result = data.get("extract_result", {})[0]
-                if extract_result.get("state") == "done":
-                    logger.info("Parse completed successfully")
-                    return extract_result
-                if extract_result.get("state") == "failed":
-                    logger.error(f"Parse failed, reason: {extract_result.get('err_msg')}")
-                    raise Exception(f"Parse failed, reason: {extract_result.get('err_msg')}")
-                logger.info(f"Parse in progress, state: {extract_result.get('state')}")
-            else:
-                logger.warning(f"Failed to get parse result, status: {response.status_code}")
-                raise Exception(f"Failed to get parse result, status: {response.status_code}")
+            try:
+                response = get(url, headers=headers, timeout=30)
+                if response.status_code == 200:
+                    data = response.json().get("data", {})
+                    extract_result = data.get("extract_result", {})[0]
+                    if extract_result.get("state") == "done":
+                        logger.info("Parse completed successfully")
+                        return extract_result
+                    if extract_result.get("state") == "failed":
+                        logger.error(f"Parse failed, reason: {extract_result.get('err_msg')}")
+                        raise Exception(f"Parse failed, reason: {extract_result.get('err_msg')}")
+                    logger.info(f"Parse in progress, state: {extract_result.get('state')}")
+                else:
+                    logger.warning(f"Failed to get parse result, status: {response.status_code}")
+                    raise Exception(f"Failed to get parse result, status: {response.status_code}")
+            except Exception as e:
+                if "NameResolutionError" in str(type(e)) or "ConnectionError" in str(type(e)):
+                    logger.error(f"Network error during polling: {str(e)}")
+                    raise Exception(f"网络连接错误: {str(e)}。请检查网络连接和base_url配置。")
+                else:
+                    raise e
 
             time.sleep(retry_interval)
 
@@ -320,46 +341,51 @@ class MineruTool(Tool):
 
     def _download_and_extract_zip(self, url: str) -> Generator[ToolInvokeMessage, None, None]:
         """Download and extract zip file from URL."""
-        response = httpx.get(url)
-        response.raise_for_status()
+        try:
+            response = httpx.get(url, timeout=30)
+            response.raise_for_status()
 
-        content = ZipContent()
+            content = ZipContent()
 
-        with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
-            for file_info in zip_file.infolist():
-                if file_info.is_dir():
-                    continue
+            with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
+                for file_info in zip_file.infolist():
+                    if file_info.is_dir():
+                        continue
 
-                file_name = file_info.filename.lower()
-                with zip_file.open(file_info) as f:
-                    if file_name.startswith("images/") and file_name.endswith(('.png', '.jpg', '.jpeg')):
-                        image_bytes = f.read()
-                        upload_file_res = self._process_image(image_bytes, file_info)
-                        content.images.append(upload_file_res)
-                        if not upload_file_res.preview_url:
-                            base_name = os.path.basename(file_info.filename)
-                            yield self.create_blob_message(image_bytes,
-                                                           meta={"filename": base_name, "mime_type": "image/jpeg"})
-                    elif file_name.endswith(".md"):
-                        content.md_content = f.read().decode('utf-8')
-                    elif file_name.endswith('.json') and file_name != "layout.json":
-                        content.content_list.append(json.loads(f.read().decode('utf-8')))
-                    elif file_name.endswith('.html'):
-                        content.html_content = f.read().decode('utf-8')
-                        yield self.create_blob_message(content.html_content,
-                                                       meta={"filename": file_name, "mime_type": "text/html"})
-                    elif file_name.endswith('.docx'):
-                        content.docx_content = f.read()
-                        yield self.create_blob_message(content.docx_content,
-                                                       meta={"filename": file_name, "mime_type": "application/msword"})
-                    elif file_name.endswith('.tex'):
-                        content.latex_content = f.read().decode('utf-8')
-                        yield self.create_blob_message(content.latex_content,
-                                                       meta={"filename": file_name, "mime_type": "application/x-tex"})
-        yield self.create_json_message({"content_list": content.content_list})
-        content.md_content = self._replace_md_img_path(content.md_content, content.images)
-        yield self.create_text_message(content.md_content)
-        yield self.create_variable_message("images", content.images)
+                    file_name = file_info.filename.lower()
+                    with zip_file.open(file_info) as f:
+                        if file_name.startswith("images/") and file_name.endswith(('.png', '.jpg', '.jpeg')):
+                            image_bytes = f.read()
+                            upload_file_res = self._process_image(image_bytes, file_info)
+                            content.images.append(upload_file_res)
+                            if not upload_file_res.preview_url:
+                                base_name = os.path.basename(file_info.filename)
+                                yield self.create_blob_message(image_bytes,
+                                                               meta={"filename": base_name, "mime_type": "image/jpeg"})
+                        elif file_name.endswith(".md"):
+                            content.md_content = f.read().decode('utf-8')
+                        elif file_name.endswith('.json') and file_name != "layout.json":
+                            content.content_list.append(json.loads(f.read().decode('utf-8')))
+                        elif file_name.endswith('.html'):
+                            content.html_content = f.read().decode('utf-8')
+                            yield self.create_blob_message(content.html_content,
+                                                           meta={"filename": file_name, "mime_type": "text/html"})
+                        elif file_name.endswith('.docx'):
+                            content.docx_content = f.read()
+                            yield self.create_blob_message(content.docx_content,
+                                                           meta={"filename": file_name, "mime_type": "application/msword"})
+                        elif file_name.endswith('.tex'):
+                            content.latex_content = f.read().decode('utf-8')
+                            yield self.create_blob_message(content.latex_content,
+                                                           meta={"filename": file_name, "mime_type": "application/x-tex"})
+            yield self.create_json_message({"content_list": content.content_list})
+            content.md_content = self._replace_md_img_path(content.md_content, content.images)
+            yield self.create_text_message(content.md_content)
+            yield self.create_variable_message("images", content.images)
+            
+        except Exception as e:
+            logger.error(f"Error downloading or extracting zip: {str(e)}")
+            yield self.create_text_message(f"下载或解压结果文件时出错: {str(e)}")
 
     def _process_image(self, image_bytes: bytes, file_info: zipfile.ZipInfo) -> UploadFileResponse:
         """Process an image file from the zip archive."""
