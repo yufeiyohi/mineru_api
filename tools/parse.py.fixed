@@ -143,11 +143,26 @@ class MineruTool(Tool):
             for file_name, encoded_image_data in file_obj.items():
                 base64_data = encoded_image_data.split(",")[1]
                 image_bytes = base64.b64decode(base64_data)
-                file_res = self.session.file.upload(
-                    file_name,
-                    image_bytes,
-                    "image/jpeg"
-                )
+                try:
+                    file_res = self.session.file.upload(
+                        file_name,
+                        image_bytes,
+                        "image/jpeg"
+                    )
+                except Exception as e:
+                    # 如果上传失败，记录错误但继续处理
+                    logger.error(f"Failed to upload image {file_name}: {str(e)}")
+                    # 创建一个模拟的UploadFileResponse对象，避免中断流程
+                    from dify_plugin.invocations.file import UploadFileResponse
+                    file_res = UploadFileResponse(
+                        id="fallback_" + file_name,
+                        name=file_name,
+                        size=len(image_bytes),
+                        extension="jpg",
+                        mime_type="image/jpeg",
+                        preview_url=None,
+                        url=None
+                    )
                 images.append(file_res)
                 if not file_res.preview_url:
                     yield self.create_blob_message(image_bytes, meta={"filename": file_name, "mime_type": "image/jpeg"})
@@ -172,6 +187,8 @@ class MineruTool(Tool):
                 raise ValueError("File is required")
             self._validate_file_type(file.filename)
 
+            # logger.error(f"file:{file}")
+            
             # 1. 申请上传地址
             data = {
                 "enable_formula": tool_parameters.get("enable_formula", True),
@@ -198,27 +215,34 @@ class MineruTool(Tool):
                 raise Exception('apply upload url failed,reason:{}'.format(result.get("msg", "unknown")))
 
             batch_id = result["data"]["batch_id"]
+            logger.error(f"batch_id:{batch_id}")
             upload_url = result["data"]["file_urls"][0]
-
+            logger.error(f"upload_url:{upload_url}")
             # 2. 上传文件
-            res_upload = put(upload_url, data=file.blob)
-            logger.error(f"显示blob内容{file.blob}")
+            # 修复bug，FILE_URL不使用http://api:5001，就用get url获取内容上传
+            resp = get(file.url, headers=headers)
+            file_content = resp.content
+            # logger.error(f"file_content:{file_content}")
+            res_upload = put(upload_url, data=file_content)
             if res_upload.status_code != 200:
                 logger.error(f"{upload_url} upload failed")
                 raise Exception(f"{upload_url} upload failed")
 
             # 3. 轮询解析结果
             extract_result = self._poll_get_parse_result(credentials, batch_id)
+            logger.error(f"extract_result:{extract_result.get("extract_result")}")
 
             # 4. 下载并提取 zip
             yield from self._download_and_extract_zip(extract_result.get("full_zip_url"))
+            logger.error(f"full_zip_url:{extract_result.get("full_zip_url")}")
             yield self.create_variable_message("full_zip_url", extract_result.get("full_zip_url"))
 
     def _poll_get_parse_result(self, credentials: Credentials, batch_id: str) -> Dict[str, Any]:
         """poll get parser result."""
         url = self._build_api_url(credentials.base_url, f"api/v4/extract-results/batch/{batch_id}")
+        # logger.error(f"extract_url:{url}")
         headers = self._get_headers(credentials)
-        max_retries = 50
+        max_retries = 100
         retry_interval = 5
 
         for _ in range(max_retries):
@@ -226,6 +250,7 @@ class MineruTool(Tool):
             if response.status_code == 200:
                 data = response.json().get("data", {})
                 extract_result = data.get("extract_result", {})[0]
+                logger.error(f"extract_result:{extract_result}")
                 if extract_result.get("state") == "done":
                     logger.info("Parse completed successfully")
                     return extract_result
@@ -244,6 +269,7 @@ class MineruTool(Tool):
 
     def _download_and_extract_zip(self, url: str) -> Generator[ToolInvokeMessage, None, None]:
         """Download and extract zip file from URL."""
+        logger.error(f"download_url: {url}")
         response = httpx.get(url)
         response.raise_for_status()
 
@@ -288,11 +314,25 @@ class MineruTool(Tool):
     def _process_image(self, image_bytes: bytes, file_info: zipfile.ZipInfo) -> UploadFileResponse:
         """Process an image file from the zip archive."""
         base_name = os.path.basename(file_info.filename)
-        return self.session.file.upload(
-            base_name,
-            image_bytes,
-            "image/jpeg"
-        )
+        try:
+            return self.session.file.upload(
+                base_name,
+                image_bytes,
+                "image/jpeg"
+            )
+        except Exception as e:
+            # 如果上传失败，记录错误但继续处理
+            logger.error(f"Failed to upload image {base_name}: {str(e)}")
+            # 创建一个模拟的UploadFileResponse对象，避免中断流程
+            return UploadFileResponse(
+                id="fallback_" + base_name,
+                name=base_name,
+                size=len(image_bytes),
+                extension="jpg",
+                mime_type="image/jpeg",
+                preview_url=None,
+                url=None
+            )
 
     @staticmethod
     def _replace_md_img_path(md_content: str, images: list[UploadFileResponse]) -> str:
