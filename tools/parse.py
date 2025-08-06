@@ -217,7 +217,7 @@ class MineruTool(Tool):
         """poll get parser result."""
         url = self._build_api_url(credentials.base_url, f"api/v4/extract-results/batch/{batch_id}")
         headers = self._get_headers(credentials)
-        max_retries = 50
+        max_retries = 200
         retry_interval = 5
 
         for _ in range(max_retries):
