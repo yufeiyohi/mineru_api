@@ -176,7 +176,23 @@ Please follow the instructions above to configure the settings accordingly, and 
 
 https://github.com/langgenius/dify/issues/16327
 
+2. **DNS resolution error: Unable to connect to `api:5001`**
+
+If you encounter the following error:
+```text
+requests.exceptions.ConnectionError: HTTPConnectionPool(host='api', port=5001): Max retries exceeded with url: /files/upload/for-plugin...
+```
+
+Please refer to the detailed solutions in [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) 
+
+## Troubleshooting
+
+or a detailed troubleshooting guide, please consult the [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) file, which includes:
+- DNS resolution issues
+- Network connectivity problems
+- File upload failures
+- Configuration errors
+
 ## Credits
 
 This plugin is powered by [MinerU]([GitHub - opendatalab/MinerU: A high-quality tool for convert PDF to Markdown and JSON.](https://github.com/opendatalab/MinerU))
-
