@@ -202,7 +202,6 @@ class MineruTool(Tool):
 
             # 2. 上传文件
             res_upload = put(upload_url, data=file.blob)
-            logger.error(f"显示blob内容{file.blob}")
             if res_upload.status_code != 200:
                 logger.error(f"{upload_url} upload failed")
                 raise Exception(f"{upload_url} upload failed")
